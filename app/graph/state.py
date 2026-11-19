@@ -1,9 +1,4 @@
-"""Shared state definition for one Pull Request review thread.
-
-Keep the state data-oriented: store source files, diagnostics, proposed files,
-review decisions, and an audit trail. Build prompts inside nodes rather than
-persisting prompt strings in the graph state.
-"""
+"""Shared state definition for one Pull Request review thread."""
 
 from __future__ import annotations
 
@@ -35,14 +30,9 @@ class ReviewHistoryEntry(TypedDict, total=False):
 
 
 class ReviewState(TypedDict):
-    """The shared state for the assessment's code-review workflow.
+    """Shared state for the assessment's code-review workflow."""
 
-    The first seven fields are the keys explicitly requested in the brief.
-    Additional fields hold GitHub identifiers and execution metadata needed by
-    the implementation.
-    """
-
-    # Required by the assessment brief.
+    # Required by the project brief.
     pr_url: str
     code_contents: dict[str, str]
     lint_errors: list[dict[str, Any]]
@@ -51,11 +41,20 @@ class ReviewState(TypedDict):
     reviewer_feedback: str | None
     history: Annotated[list[ReviewHistoryEntry], operator.add]
 
-    # Additional workflow metadata.
+    # GitHub identity and PR ingestion metadata.
     repository_full_name: str
     pr_number: int
+    pr_title: str
+    pr_body: str
     base_branch: str
     head_branch: str
+    base_sha: str | None
+    head_sha: str | None
+    head_repo_full_name: str
+    author: str
+    file_changes: list[dict[str, Any]]
+
+    # Workflow metadata.
     review_status: ReviewStatus
     review_attempt: int
     commit_sha: str | None
@@ -70,7 +69,7 @@ def create_initial_state(
     base_branch: str = "main",
     head_branch: str = "",
 ) -> ReviewState:
-    """Create a complete, predictable initial state for a new review thread."""
+    """Create and validate the complete initial state for a review thread."""
     if not pr_url.strip():
         raise ValueError("pr_url must not be empty")
     if not repository_full_name.strip() or "/" not in repository_full_name:
@@ -88,8 +87,15 @@ def create_initial_state(
         "history": [],
         "repository_full_name": repository_full_name,
         "pr_number": pr_number,
+        "pr_title": "",
+        "pr_body": "",
         "base_branch": base_branch,
         "head_branch": head_branch,
+        "base_sha": None,
+        "head_sha": None,
+        "head_repo_full_name": repository_full_name,
+        "author": "unknown",
+        "file_changes": [],
         "review_status": "queued",
         "review_attempt": 0,
         "commit_sha": None,

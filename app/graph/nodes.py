@@ -1,17 +1,13 @@
-"""LangGraph node functions.
-
-The review router is implemented in this milestone. External-effect nodes are
-explicit stubs and will be completed in their dedicated milestones; raising
-NotImplementedError is intentional so an incomplete integration cannot appear
-successful or silently write to GitHub.
-"""
+"""LangGraph node functions for the code-review workflow."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, NoReturn
 
+from app.config.settings import get_settings
 from app.graph.state import ReviewState
+from app.services.github_service import GitHubService
 
 
 def _not_implemented(node_name: str) -> NoReturn:
@@ -21,8 +17,53 @@ def _not_implemented(node_name: str) -> NoReturn:
 
 
 def fetch_pr_node(state: ReviewState) -> dict[str, Any]:
-    """Fetch PR metadata and changed file contents from GitHub (next milestone)."""
-    _not_implemented("fetch_pr_node")
+    """Fetch PR metadata and changed Python files from GitHub.
+
+    This node is read-only. It never creates branches, commits, or updates PRs.
+    """
+    settings = get_settings()
+    if not settings.github_token:
+        raise RuntimeError("GITHUB_TOKEN is not configured. Add it to your local .env file.")
+
+    service = GitHubService(token=settings.github_token)
+    try:
+        snapshot = service.fetch_pull_request(
+            repository_full_name=state["repository_full_name"],
+            pr_number=state["pr_number"],
+        )
+    finally:
+        service.close()
+
+    history_entry = {
+        "node": "fetch_pr_node",
+        "event": "pull_request_fetched",
+        "detail": (
+            f"Fetched {len(snapshot['code_contents'])} Python source file(s) "
+            f"from {snapshot['repository_full_name']}#{snapshot['pr_number']} "
+            f"at head commit {snapshot['head_sha']}."
+        ),
+        "attempt": state.get("review_attempt", 0),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    return {
+        "pr_url": snapshot["pr_url"],
+        "pr_title": snapshot["pr_title"],
+        "pr_body": snapshot["pr_body"],
+        "repository_full_name": snapshot["repository_full_name"],
+        "pr_number": snapshot["pr_number"],
+        "base_branch": snapshot["base_branch"],
+        "head_branch": snapshot["head_branch"],
+        "base_sha": snapshot["base_sha"],
+        "head_sha": snapshot["head_sha"],
+        "head_repo_full_name": snapshot["head_repo_full_name"],
+        "author": snapshot["author"],
+        "file_changes": snapshot["file_changes"],
+        "code_contents": snapshot["code_contents"],
+        "review_status": "linting",
+        "error_message": None,
+        "history": [history_entry],
+    }
 
 
 def lint_code_node(state: ReviewState) -> dict[str, Any]:
@@ -36,13 +77,7 @@ def propose_refactor_node(state: ReviewState) -> dict[str, Any]:
 
 
 def review_router_node(state: ReviewState) -> dict[str, Any]:
-    """Record the current review routing decision for auditability.
-
-    `is_approved is None` means the first proposal is ready and must be shown
-    to a human. `False` means the human rejected it and the proposal node must
-    run again with reviewer_feedback. `True` permits the write node to run.
-    The graph's interrupt-before gate pauses execution before that write.
-    """
+    """Record the current review routing decision for auditability."""
     if state.get("is_approved") is False:
         status = "changes_requested"
         event = "review_rejected"
@@ -63,14 +98,8 @@ def review_router_node(state: ReviewState) -> dict[str, Any]:
     return {"review_status": status, "history": [entry]}
 
 
-
 def apply_changes_node(state: ReviewState) -> dict[str, Any]:
-    """Write approved files to GitHub (GitHub write milestone).
-
-    The approval guard is deliberately present now, before the write operation
-    is implemented, so an accidental route can never become an unauthorized
-    repository write later.
-    """
+    """Write approved files to GitHub (write-back milestone)."""
     if state.get("is_approved") is not True:
         raise PermissionError("Refusing to write changes without explicit reviewer approval")
     _not_implemented("apply_changes_node")
