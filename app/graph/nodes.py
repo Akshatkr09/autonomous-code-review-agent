@@ -9,6 +9,7 @@ from typing import Any, NoReturn
 from app.config.settings import get_settings
 from app.graph.state import ReviewState
 from app.services.github_service import GitHubService
+from app.services.refactor_service import RefactorService
 from app.tools.linter import run_linter_tool
 
 
@@ -129,8 +130,47 @@ def lint_code_node(state: ReviewState) -> dict[str, Any]:
 
 
 def propose_refactor_node(state: ReviewState) -> dict[str, Any]:
-    """Generate a refactoring proposal using the configured LLM (LLM milestone)."""
-    _not_implemented("propose_refactor_node")
+    """Generate a complete, feedback-aware refactoring proposal using the LLM."""
+    code_contents = state.get("code_contents") or {}
+    if not code_contents:
+        raise ValueError("No Python source files are available to refactor.")
+
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured. Add it to your local .env file."
+        )
+
+    service = RefactorService(
+        api_key=settings.openai_api_key,
+        model_name=settings.openai_model,
+    )
+    proposal = service.generate_refactor(
+        code_contents=code_contents,
+        lint_errors=state.get("lint_errors") or [],
+        reviewer_feedback=state.get("reviewer_feedback"),
+        review_attempt=state.get("review_attempt", 0),
+    )
+
+    attempt = state.get("review_attempt", 0) + 1
+    history_entry = {
+        "node": "propose_refactor_node",
+        "event": "refactor_proposed",
+        "detail": proposal["refactor_summary"],
+        "attempt": attempt,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    return {
+        "refactored_code": proposal["refactored_code"],
+        "refactor_summary": proposal["refactor_summary"],
+        "review_attempt": attempt,
+        # Every regenerated proposal requires a fresh reviewer decision.
+        "is_approved": None,
+        "review_status": "awaiting_approval",
+        "error_message": None,
+        "history": [history_entry],
+    }
 
 
 def review_router_node(state: ReviewState) -> dict[str, Any]:

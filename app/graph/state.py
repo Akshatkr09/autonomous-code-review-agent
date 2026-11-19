@@ -55,6 +55,9 @@ class ReviewState(TypedDict):
     file_changes: list[dict[str, Any]]
     lint_results: list[dict[str, Any]]
 
+    # Refactoring proposal metadata.
+    refactor_summary: str
+
     # Workflow metadata.
     review_status: ReviewStatus
     review_attempt: int
@@ -98,6 +101,7 @@ def create_initial_state(
         "author": "unknown",
         "file_changes": [],
         "lint_results": [],
+        "refactor_summary": "",
         "review_status": "queued",
         "review_attempt": 0,
         "commit_sha": None,
