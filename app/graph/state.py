@@ -41,7 +41,7 @@ class ReviewState(TypedDict):
     reviewer_feedback: str | None
     history: Annotated[list[ReviewHistoryEntry], operator.add]
 
-    # GitHub identity and PR ingestion metadata.
+    # PR ingestion and lint metadata.
     repository_full_name: str
     pr_number: int
     pr_title: str
@@ -53,6 +53,7 @@ class ReviewState(TypedDict):
     head_repo_full_name: str
     author: str
     file_changes: list[dict[str, Any]]
+    lint_results: list[dict[str, Any]]
 
     # Workflow metadata.
     review_status: ReviewStatus
@@ -96,6 +97,7 @@ def create_initial_state(
         "head_repo_full_name": repository_full_name,
         "author": "unknown",
         "file_changes": [],
+        "lint_results": [],
         "review_status": "queued",
         "review_attempt": 0,
         "commit_sha": None,

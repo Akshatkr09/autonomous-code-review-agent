@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, NoReturn
 
 from app.config.settings import get_settings
 from app.graph.state import ReviewState
 from app.services.github_service import GitHubService
+from app.tools.linter import run_linter_tool
 
 
 def _not_implemented(node_name: str) -> NoReturn:
@@ -67,8 +69,63 @@ def fetch_pr_node(state: ReviewState) -> dict[str, Any]:
 
 
 def lint_code_node(state: ReviewState) -> dict[str, Any]:
-    """Run the custom linter against fetched files (sandbox milestone)."""
-    _not_implemented("lint_code_node")
+    """Run Flake8 and Black for every fetched Python file via the Docker tool."""
+    code_contents = state.get("code_contents") or {}
+    if not code_contents:
+        raise ValueError("No Python source files are available to lint.")
+
+    lint_results: list[dict[str, Any]] = []
+    lint_errors: list[dict[str, Any]] = []
+
+    for filename, source in code_contents.items():
+        raw_result = run_linter_tool.invoke(
+            {"code_string": source, "filename": filename}
+        )
+        try:
+            result = json.loads(raw_result)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Linter returned an invalid result for {filename}.") from exc
+
+        if result.get("category") != "lint_result":
+            raise RuntimeError(
+                f"Linter infrastructure failed for {filename}: {result.get('output', 'Unknown error')}"
+            )
+
+        lint_results.append(result)
+        if result.get("flake8_exit_code"):
+            lint_errors.append(
+                {
+                    "file": filename,
+                    "tool": "flake8",
+                    "message": result.get("output", "Flake8 reported issues."),
+                }
+            )
+        if result.get("black_exit_code"):
+            lint_errors.append(
+                {
+                    "file": filename,
+                    "tool": "black",
+                    "message": result.get("output", "Black reported formatting differences."),
+                }
+            )
+
+    history_entry = {
+        "node": "lint_code_node",
+        "event": "linting_completed",
+        "detail": (
+            f"Checked {len(lint_results)} Python file(s); "
+            f"{len(lint_errors)} linter check(s) reported issues."
+        ),
+        "attempt": state.get("review_attempt", 0),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    return {
+        "lint_results": lint_results,
+        "lint_errors": lint_errors,
+        "review_status": "proposing",
+        "history": [history_entry],
+    }
 
 
 def propose_refactor_node(state: ReviewState) -> dict[str, Any]:
