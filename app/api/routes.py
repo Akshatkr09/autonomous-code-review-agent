@@ -9,8 +9,8 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
-from starlette.concurrency import run_in_threadpool
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.api.schemas import GitHubWebhookPayload, ReviewDecisionRequest
 from app.config.settings import get_settings
@@ -70,6 +70,10 @@ def _snapshot_response(thread_id: str, snapshot) -> dict:
         "refactor_summary": values.get("refactor_summary", ""),
         "refactored_code": values.get("refactored_code", {}),
         "review_attempt": values.get("review_attempt", 0),
+        "commit_sha": values.get("commit_sha"),
+        "commit_url": values.get("commit_url"),
+        "commit_branch": values.get("commit_branch"),
+        "commit_repository_full_name": values.get("commit_repository_full_name"),
         "error_message": values.get("error_message"),
     }
 
@@ -123,7 +127,6 @@ async def receive_github_webhook(request: Request) -> dict:
             head_branch=payload.pull_request.head.ref or "",
         )
     except Exception as exc:
-        # Do not expose raw third-party exception text or credentials to callers.
         raise HTTPException(
             status_code=502,
             detail="The review workflow could not process this Pull Request. Check server logs and integration configuration.",
@@ -137,7 +140,7 @@ async def receive_github_webhook(request: Request) -> dict:
 
 @router.post("/reviews/{thread_id}/approve")
 def submit_review_decision(thread_id: str, decision: ReviewDecisionRequest, request: Request) -> dict:
-    """Persist approval or rejection; rejected proposals are regenerated immediately."""
+    """Record a reviewer decision and resume the graph to its next checkpoint."""
     runtime = _runtime(request)
     try:
         snapshot = runtime.submit_decision(
@@ -150,14 +153,17 @@ def submit_review_decision(thread_id: str, decision: ReviewDecisionRequest, requ
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Could not update the review thread") from exc
+        # Avoid exposing GitHub API details, code contents, or credentials.
+        raise HTTPException(
+            status_code=502,
+            detail="The review decision was recorded, but workflow resumption failed. Check server logs and review status.",
+        ) from exc
 
     response = _snapshot_response(thread_id, snapshot)
-    response["message"] = (
-        "Approval persisted. GitHub write-back will resume when the write node is enabled."
-        if decision.approved
-        else "Feedback saved and a revised proposal has been generated."
-    )
+    if decision.approved:
+        response["message"] = "Approved refactored files were committed to the Pull Request branch."
+    else:
+        response["message"] = "Feedback saved and a revised proposal has been generated."
     return response
 
 

@@ -15,6 +15,8 @@ def _fake_fetch(state: dict) -> dict[str, Any]:
     return {
         "code_contents": {"sample.py": "def add(a,b):return a+b"},
         "pr_title": "Test PR",
+        "head_sha": "reviewed-head-sha",
+        "head_branch": "feature/example",
         "review_status": "linting",
     }
 
@@ -41,7 +43,13 @@ def _fake_propose(state: dict) -> dict[str, Any]:
 
 def _fake_apply(state: dict) -> dict[str, Any]:
     assert state.get("is_approved") is True
-    return {"commit_sha": "fake-commit", "review_status": "completed"}
+    return {
+        "commit_sha": "fake-commit",
+        "commit_url": "https://github.com/sample-owner/sample-repo/commit/fake-commit",
+        "commit_branch": "feature/example",
+        "commit_repository_full_name": "sample-owner/sample-repo",
+        "review_status": "completed",
+    }
 
 
 def _node_overrides():
@@ -112,7 +120,7 @@ def test_rejection_feedback_regenerates_proposal_and_pauses_again(tmp_path: Path
         assert "Use list comprehensions" in body["refactored_code"]["sample.py"]
 
 
-def test_approval_is_persisted_at_write_gate(tmp_path: Path) -> None:
+def test_approval_resumes_graph_and_completes_writeback(tmp_path: Path) -> None:
     with _client(tmp_path / "reviews.sqlite") as client:
         started = client.post("/api/webhooks/github", json=_webhook_payload()).json()
         thread_id = started["thread_id"]
@@ -124,9 +132,13 @@ def test_approval_is_persisted_at_write_gate(tmp_path: Path) -> None:
 
         assert approved.status_code == 200
         body = approved.json()
-        assert body["status"] == "approved"
+        assert body["status"] == "completed"
         assert body["approval_recorded"] is True
-        assert body["next_nodes"] == ["apply_changes_node"]
+        assert body["next_nodes"] == []
+        assert body["waiting_for_reviewer"] is False
+        assert body["commit_sha"] == "fake-commit"
+        assert body["commit_branch"] == "feature/example"
+        assert "committed" in body["message"].lower()
 
 
 def test_unsupported_webhook_action_is_ignored(tmp_path: Path) -> None:

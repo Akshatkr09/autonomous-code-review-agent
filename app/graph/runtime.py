@@ -1,10 +1,4 @@
-"""Runtime manager for the checkpointed LangGraph review workflow.
-
-The synchronous SqliteSaver is suitable for this local assessment application.
-Keep its SQLite connection open for the application's lifespan; do not create a
-new checkpointer for each request or the workflow will lose access to prior
-thread checkpoints.
-"""
+"""Runtime manager for the checkpointed LangGraph review workflow."""
 
 from __future__ import annotations
 
@@ -110,12 +104,11 @@ class ReviewRuntime:
         approved: bool,
         feedback: str | None = None,
     ) -> Any:
-        """Persist a reviewer decision and resume rejected proposals.
+        """Persist a human decision and resume the graph to its next safe point.
 
-        An approved decision is persisted at the write gate. The actual GitHub
-        write node is connected in the following milestone; keeping this
-        method from invoking that node prevents an incomplete write-back stub
-        from being mistaken for a successful commit.
+        Rejection resumes proposal generation and pauses again before writes.
+        Approval resumes apply_changes_node; the graph only completes after the
+        GitHub service confirms that the approved commit was pushed.
         """
         graph = self._require_graph()
         config = self._config(thread_id)
@@ -124,10 +117,19 @@ class ReviewRuntime:
             raise LookupError(f"Review thread '{thread_id}' was not found")
 
         if tuple(snapshot.next) != ("apply_changes_node",):
-            raise ValueError("This review is not currently waiting for a reviewer decision")
+            raise ValueError("This review is not currently waiting at the approval checkpoint")
 
         values = snapshot.values
-        if values.get("is_approved") is not None:
+        existing_decision = values.get("is_approved")
+        # If the graph previously failed while trying to apply an approved
+        # proposal, allow the same approval request to retry that pending node.
+        if existing_decision is True and approved is True and values.get("review_status") == "approved":
+            graph.invoke(None, config)
+            updated = graph.get_state(config)
+            if updated.values.get("review_status") != "completed":
+                raise RuntimeError("Approved write-back did not complete")
+            return updated
+        if existing_decision is not None:
             raise ValueError("A decision has already been recorded for this proposal")
 
         clean_feedback = (feedback or "").strip()
@@ -154,15 +156,14 @@ class ReviewRuntime:
             as_node="review_router_node",
         )
 
-        if not approved:
-            # The updated checkpoint is treated as the router's output, so
-            # the conditional edge returns to propose_refactor_node.
-            graph.invoke(None, config)
-            updated = graph.get_state(config)
-            if tuple(updated.next) != ("apply_changes_node",):
-                raise RuntimeError("Rejected review did not return to the approval checkpoint")
+        graph.invoke(None, config)
+        updated = graph.get_state(config)
+
+        if approved:
+            if updated.values.get("review_status") != "completed":
+                raise RuntimeError("Approval was recorded but GitHub write-back did not complete")
             return updated
 
-        # Approval is now durable in SQLite. M7 will resume the graph and
-        # perform the guarded GitHub commit from apply_changes_node.
-        return graph.get_state(config)
+        if tuple(updated.next) != ("apply_changes_node",):
+            raise RuntimeError("Rejected review did not return to the approval checkpoint")
+        return updated

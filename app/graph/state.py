@@ -58,10 +58,15 @@ class ReviewState(TypedDict):
     # Refactoring proposal metadata.
     refactor_summary: str
 
+    # GitHub write-back metadata.
+    commit_sha: str | None
+    commit_url: str | None
+    commit_branch: str | None
+    commit_repository_full_name: str | None
+
     # Workflow metadata.
     review_status: ReviewStatus
     review_attempt: int
-    commit_sha: str | None
     error_message: str | None
 
 
@@ -102,8 +107,11 @@ def create_initial_state(
         "file_changes": [],
         "lint_results": [],
         "refactor_summary": "",
+        "commit_sha": None,
+        "commit_url": None,
+        "commit_branch": None,
+        "commit_repository_full_name": None,
         "review_status": "queued",
         "review_attempt": 0,
-        "commit_sha": None,
         "error_message": None,
     }

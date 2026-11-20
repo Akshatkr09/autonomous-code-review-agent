@@ -165,7 +165,6 @@ def propose_refactor_node(state: ReviewState) -> dict[str, Any]:
         "refactored_code": proposal["refactored_code"],
         "refactor_summary": proposal["refactor_summary"],
         "review_attempt": attempt,
-        # Every regenerated proposal requires a fresh reviewer decision.
         "is_approved": None,
         "review_status": "awaiting_approval",
         "error_message": None,
@@ -196,7 +195,63 @@ def review_router_node(state: ReviewState) -> dict[str, Any]:
 
 
 def apply_changes_node(state: ReviewState) -> dict[str, Any]:
-    """Write approved files to GitHub (write-back milestone)."""
+    """Commit the approved proposal to the exact PR head branch reviewed by the agent."""
     if state.get("is_approved") is not True:
         raise PermissionError("Refusing to write changes without explicit reviewer approval")
-    _not_implemented("apply_changes_node")
+
+    original_files = state.get("code_contents") or {}
+    proposed_files = state.get("refactored_code") or {}
+    if not original_files:
+        raise ValueError("No original source files are recorded for this review")
+    if not proposed_files:
+        raise ValueError("No approved refactored files are available to commit")
+    if set(proposed_files) != set(original_files):
+        raise ValueError(
+            "Approved proposal must contain exactly the Python files fetched from the Pull Request"
+        )
+
+    head_sha = state.get("head_sha")
+    head_branch = state.get("head_branch")
+    if not head_sha or not head_branch:
+        raise ValueError("The reviewed Pull Request head SHA and branch are missing")
+
+    settings = get_settings()
+    if not settings.github_token:
+        raise RuntimeError("GITHUB_TOKEN is not configured. Add it to your local .env file.")
+
+    service = GitHubService(token=settings.github_token)
+    try:
+        commit_result = service.commit_refactored_files(
+            repository_full_name=state["repository_full_name"],
+            pr_number=state["pr_number"],
+            expected_head_sha=head_sha,
+            expected_head_branch=head_branch,
+            refactored_code=proposed_files,
+            commit_message=(
+                f"chore: apply approved refactoring for PR #{state['pr_number']}"
+            ),
+        )
+    finally:
+        service.close()
+
+    history_entry = {
+        "node": "apply_changes_node",
+        "event": "approved_changes_committed",
+        "detail": (
+            f"Committed {len(proposed_files)} approved Python file(s) to "
+            f"{commit_result['commit_repository_full_name']}:{commit_result['commit_branch']} "
+            f"({commit_result['commit_sha']})."
+        ),
+        "attempt": state.get("review_attempt", 0),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    return {
+        "commit_sha": commit_result["commit_sha"],
+        "commit_url": commit_result.get("commit_url", ""),
+        "commit_branch": commit_result["commit_branch"],
+        "commit_repository_full_name": commit_result["commit_repository_full_name"],
+        "review_status": "completed",
+        "error_message": None,
+        "history": [history_entry],
+    }
