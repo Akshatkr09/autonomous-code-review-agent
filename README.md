@@ -1,104 +1,133 @@
 # Autonomous Code Review & Refactoring Agent
 
-A stateful code review and refactoring agent built with **LangGraph**, **LangChain**, the **GitHub API**, and **FastAPI**. It is designed to inspect Pull Request changes, run code-quality checks in an isolated environment, propose refactorings with an LLM, and require human approval before writing changes back to GitHub.
+A LangGraph-powered agent that reviews GitHub Pull Requests, runs Python lint checks in a restricted Docker container, proposes refactorings with an LLM, and commits approved changes to the Pull Request's source branch only after human approval.
 
-> **Status:** Initial project scaffold. Workflow nodes, API routes, GitHub operations, sandbox execution, and automated tests will be implemented and validated in subsequent milestones.
+**Assessment implementation:** Python · LangGraph · LangChain · GitHub API · FastAPI · Docker · SQLite · Pytest
 
-## Assessment objectives
+## Workflow
 
-The implementation will cover the three verification scenarios in the project brief:
+1. `POST /api/webhooks/github` receives a Pull Request event and starts a LangGraph review thread.
+2. `fetch_pr_node` retrieves Pull Request metadata and changed Python files from the PR head commit.
+3. `lint_code_node` runs Flake8 and Black through the Docker-backed custom LangChain tool. PR source is inspected, not imported or executed.
+4. `propose_refactor_node` asks the configured OpenAI chat model for complete replacement source files and validates the response schema and exact filename set.
+5. LangGraph persists the review state in SQLite and pauses before `apply_changes_node`.
+6. A reviewer rejects with feedback or approves through `POST /api/reviews/{thread_id}/approve`.
+7. Rejection regenerates the proposal and pauses for a new decision. Approval resumes the graph and commits all approved files to the PR head branch in one Git commit.
 
-1. **PR ingestion and HITL pause:** receive a GitHub PR webhook (or local mock event), fetch changed files, run lint checks, and pause before repository writes.
-2. **Reviewer feedback loop:** record rejection feedback, regenerate the refactoring proposal, and pause again for review.
-3. **Approval and write-back:** resume an approved review and commit the approved changes to the PR branch.
+The agent does **not** merge Pull Requests.
 
-## Technology stack
+## Assessment deliverables
 
-- Python 3.11
-- LangGraph and SQLite-backed checkpoint persistence
-- LangChain and LangChain OpenAI integration
-- GitHub API
-- FastAPI and Uvicorn
-- Docker for isolated code-quality execution
-- Flake8 and Black
-- Pytest and HTTPX
+- Python application and automated tests in this repository.
+- OpenAPI specification: generate `openapi.json` using the export command below.
+- This README documents installation, configuration, execution, and tests.
 
-## Project layout
+The implementation maps to the assessment's three required validation scenarios: webhook ingestion/HITL pause, rejection/feedback regeneration, and approval/GitHub commit write-back. See [docs/assessment-validation.md](docs/assessment-validation.md) for reproducible steps.
+
+## Requirements
+
+- Python 3.11 or newer (the project has also been exercised locally on Python 3.14.6).
+- Git.
+- Docker Desktop with the Linux container engine running.
+- GitHub account and a fine-grained Personal Access Token.
+- OpenAI API key with API billing/model access configured.
+
+## Local installation — Windows PowerShell
+
+```powershell
+git clone https://github.com/Akshatkr09/autonomous-code-review-agent.git
+cd autonomous-code-review-agent
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Edit `.env` and provide the credentials/configuration:
+
+```dotenv
+GITHUB_TOKEN=your_fine_grained_github_token
+OPENAI_API_KEY=your_openai_api_key
+GITHUB_WEBHOOK_SECRET=
+OPENAI_MODEL=gpt-4o-mini
+DATABASE_PATH=./data/review_checkpoints.sqlite
+```
+
+The token must have **Contents: read and write**, **Pull requests: read-only**, and **Metadata: read-only** access to the repository being tested. For a forked PR, write access is needed on the PR's source/fork repository too. Keep `.env` private; only `.env.example` belongs in Git.
+
+## Build the Docker linter image
+
+Start Docker Desktop and ensure the Linux engine is running:
+
+```powershell
+docker version
+docker build -t code-review-linter:latest -f sandbox/Dockerfile sandbox
+docker image inspect code-review-linter:latest
+```
+
+The linter container runs with no network, read-only root filesystem and source mount, dropped Linux capabilities, resource limits, and an unprivileged user. It runs Flake8 and Black checks; it does not execute the submitted Python program.
+
+## Run the application
+
+From the repository root, use the command specified in the assessment brief:
+
+```powershell
+uvicorn main:app --reload
+```
+
+API documentation: <http://127.0.0.1:8000/docs>
+OpenAPI JSON endpoint: <http://127.0.0.1:8000/openapi.json>
+
+## Export OpenAPI specification for submission
+
+With dependencies installed, run:
+
+```powershell
+python scripts/export_openapi.py
+```
+
+This generates `openapi.json` at the repository root. Commit that generated file as part of the submission.
+
+## API endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/webhooks/github` | Validate a PR event and start a review thread |
+| POST | `/api/reviews/{thread_id}/approve` | Submit approval or rejection/feedback and resume the graph |
+| GET | `/api/reviews/{thread_id}` | Retrieve the persisted review status and proposal/commit metadata |
+
+When `GITHUB_WEBHOOK_SECRET` is configured, webhook requests must include a valid `X-Hub-Signature-256` header. For local assessment simulation, the secret may be left empty and a mock GitHub webhook payload can be posted. See the validation guide for full PowerShell examples.
+
+## Run automated tests
+
+```powershell
+pytest -v
+```
+
+The tests use deterministic fake GitHub/LLM integrations and a temporary SQLite database for repeatable unit and API workflow verification. They do not create real GitHub commits or spend OpenAI API credits. Use a disposable PR for the live write-back demonstration described in the validation guide.
+
+## Repository layout
 
 ```text
 app/
-  api/        FastAPI routes and request handling
-  config/     Typed application settings
-  graph/      State schema, nodes, routing, and graph construction
-  services/   GitHub API integration
-  tools/      Custom linting and sandbox tools
-tests/        Unit and integration tests
-sandbox/      Temporary analysis workspace
-data/         Local checkpoint database directory
+  api/        FastAPI request schemas and endpoints
+  config/     Typed environment settings
+  graph/      LangGraph state, nodes, routing, runtime and checkpointer
+  services/   GitHub and LLM integration services
+  tools/      Docker-backed LangChain linting tool
+sandbox/      Dockerfile for the restricted lint container
+tests/        Unit, graph, persistence and API workflow tests
+docs/         Architecture, security and assessment validation guides
+scripts/      OpenAPI export utility
+main.py       Uvicorn entry point required by the assessment
+openapi.json  Generated OpenAPI specification (created by export command)
 ```
 
-## Local setup
+## Security and operational limitations
 
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/Akshatkr09/autonomous-code-review-agent.git
-cd autonomous-code-review-agent
-```
-
-### 2. Create and activate a virtual environment
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-macOS/Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-Copy `.env.example` to `.env` and provide your own credentials:
-
-- `GITHUB_TOKEN`: token with access to the test repository. The completed workflow needs permission to read PRs and read/write repository contents.
-- `OPENAI_API_KEY`: API key used by the configured LangChain chat model.
-- `GITHUB_WEBHOOK_SECRET`: secret used to validate incoming GitHub webhook signatures.
-
-Never commit `.env` or expose credentials in logs, source code, or screenshots.
-
-### 5. Run tests
-
-The test suite will be added during implementation. Once available, run:
-
-```bash
-pytest -q
-```
-
-## Security design goals
-
-- Treat Pull Request code as untrusted input; never execute it directly on the host.
-- Run analysis in an isolated sandbox with restricted permissions and resource limits.
-- Disable network access for sandboxed code execution by default.
-- Require explicit reviewer approval before any GitHub write operation.
-- Verify webhook signatures with HMAC and protect secrets using environment configuration.
-
-## API documentation
-
-FastAPI will expose interactive OpenAPI documentation at `/docs` while the local server is running. An OpenAPI specification export will be included in the final submission.
-
-## Evaluation and validation
-
-The final test suite will verify graph routing, checkpoint/resume behavior, sandbox linting, and API integration for all three assessment scenarios. See the project brief for the detailed evaluation rubric and expected request flows.
+- Human approval is required before GitHub write-back. The write node also validates the exact reviewed PR head SHA and branch.
+- A branch movement conflict stops write-back; rerun review against the new PR head.
+- Webhook HMAC verification authenticates delivery, but the local assessment API does not implement reviewer user authentication/authorization. Do not expose it publicly as-is.
+- Use a disposable Pull Request for live tests. GitHub write-back changes the PR source branch but does not merge the PR.
+- GitHub and OpenAI API calls require valid credentials, network access, and applicable permissions/billing.
